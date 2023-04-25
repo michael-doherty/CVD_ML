@@ -1,0 +1,887 @@
+---
+title: "Combining All"
+output: html_document
+---
+
+#### REQUIRED PACKAGES ####
+```{R}
+library(caret)
+library(mice)
+library(Boruta)
+library(ROCR)
+library(ggplot2)
+library(tidyverse)
+library(naniar)
+library(ggcorrplot)
+library(mlr)
+library(rcompanion)
+library(creditmodel)
+library(lsr)
+library(leaps)
+library(MASS)
+library(tidyverse)
+library(rlist)
+```
+
+
+#### PARAMETERS ####
+```{R}
+SEED <- 12345
+
+CLEAN_DATA <- TRUE  # MUST REMAIN TRUE CURRENTLY
+RUN_EDA <- FALSE
+VARIABLE_PLOTS <- FALSE
+CORRELATION_PLOTS <- FALSE
+CORRELATION_TYPE <- 'p-value'
+CORRELATED_VARIABLE_PLOTS <- FALSE   #Doesnt change dynamically currently.
+FEATURE_IMPORTANCE_CALC <- TRUE
+STEPWISE_DIRECTION <- "both"
+
+INCLUDE_CLEVELAND <- TRUE
+INCLUDE_HUNGARIAN <- TRUE
+INCLUDE_SWITZERLAND <- TRUE
+INCLUDE_VA <- FALSE
+
+# some algorithms including random forest rf, have built-in feature selection
+INCLUDE_FEATURE_AGE <- TRUE
+INCLUDE_FEATURE_SEX <- TRUE
+INCLUDE_FEATURE_CP <- TRUE
+INCLUDE_FEATURE_TRESTBPS <- TRUE
+INCLUDE_FEATURE_CHOL <- TRUE
+INCLUDE_FEATURE_FBS <- FALSE
+INCLUDE_FEATURE_RESTECG <- FALSE
+INCLUDE_FEATURE_THALACH <- TRUE
+INCLUDE_FEATURE_EXANG <- TRUE
+INCLUDE_FEATURE_OLDPEAK <- TRUE
+INCLUDE_FEATURE_SLOPE <- TRUE
+INCLUDE_FEATURE_CA <- TRUE
+
+REMOVE_COLS <- FALSE
+REMOVE_COLS_MISSING_THRESHOLD <- 0.50
+REMOVE_COLS_WITH_ONLY_ONE_FACTOR <- FALSE
+
+REMOVE_NA_ROWS <- FALSE
+
+DATA_IMPUTATION <- TRUE
+DATA_IMPUTATION_M <- 50
+DATA_IMPUTATION_MAXIT <- 5
+DATA_IMPUTATION_METHOD <- 'pmm'
+
+SPLIT_DATA_SET <- FALSE
+TEST_TRAIN_SPLIT <- (0.75)
+
+#svm, rf, logreg.
+ALGORITHIM_TO_RUN <- "logreg"
+RF_MTRY <- 2.362278 #n or "Auto"(case sens)
+RF_NTREES <- 1500
+SVM_C <- 1
+
+GRID_SEARCH <- FALSE
+RF_MTRY_SEARCH_BOUNDARY <- 2
+RF_MTRY_SEARCH_INCREMENT <- 0.1
+RF_NTREES_T0_SEARCH <- seq(900, 1100, length = 20)
+SVM_C_TO_SEARCH <- seq(0.70, 1.30, length = 30)
+CENTER <- TRUE
+SCALE <- TRUE
+
+#validation
+VALIDATION_METHOD <- "repeatedcv"
+FOLDS <- 5
+REPEATS <- 100
+```
+
+
+
+
+
+
+
+
+
+
+
+### CODE
+
+
+# Read in data
+```{R}
+cleveland <- read.csv('DATA/processed.cleveland.data')
+hungarian <- read.csv('DATA/processed.hungarian.data')
+switzerland <- read.csv('DATA/processed.switzerland.data')
+va <- read.csv('DATA/processed.va.data')
+```
+
+# Setting colnames
+```{R}
+if(CLEAN_DATA == TRUE){ 
+
+names <- c('age', 'sex', 'cp', 'trestbps', 'chol', 'fbs', 'restecg', 'thalach', 'exang', 'oldpeak', 'slope', 'ca', 'thal', 'num')
+colnames(cleveland) <- names
+colnames(hungarian) <- names
+colnames(switzerland) <- names
+colnames(va) <- names
+
+}
+```
+
+# Row bind
+```{R}
+cleveland <- rbind(cleveland[INCLUDE_CLEVELAND], hungarian[INCLUDE_HUNGARIAN], switzerland[INCLUDE_SWITZERLAND], va[INCLUDE_VA])
+cleveland
+
+```
+
+# Setting variable num to either YES or NO
+```{R}
+cleveland$num[cleveland$num > 0] <- "YES"
+cleveland$num[cleveland$num == 0] <- "NO"
+cleveland$num <- as.factor(cleveland$num)
+```
+
+# Fix data types and make NA values consistent
+# Removing erroneous zeroes from chol
+```{R}
+NAs <- c("?", "none", "NA", "NaN", "null", "N A", "N/A", "Null", "None")
+cleveland <- type.convert(cleveland, na.strings =NAs)
+cleveland$chol[cleveland$chol == 0] <- NA
+```
+
+# Setting sex to a factor Male/Female
+```{R}
+cleveland$sex <- as.factor(cleveland$sex)
+levels(cleveland$sex) <- c('Female', 'Male')
+cleveland$cp <- as.factor(cleveland$cp)
+cleveland$fbs <- as.factor(cleveland$fbs)
+cleveland$restecg <- as.factor(cleveland$restecg)
+cleveland$exang <- as.factor(cleveland$exang)
+cleveland$slope <- as.factor(cleveland$slope)
+cleveland$ca <- as.factor(cleveland$ca)
+cleveland$thal <- as.factor(cleveland$thal)
+```
+
+```{R}
+levels(cleveland$cp) <- c("Typical Angina", "Atypical Angina", "Non-anginal pain", "Asymptomatic")
+levels(cleveland$fbs) <- c("< 120 mg/dl", "> 120 mg/dl")
+levels(cleveland$restecg) <- c("Normal", "ST-T wave abnormality", "Left ventricular hypertrophy")
+levels(cleveland$exang) <- c("NO", "YES")
+levels(cleveland$slope) <- c("Upsloping", "Flat", "Downsloping")
+levels(cleveland$thal) <- c("Normal", "Fixed Defect", "Reversible Defect")
+```
+
+
+# How many NA values?
+```{R}
+cleveland
+if(RUN_EDA == TRUE){ 
+sapply(cleveland, function(x) sum(is.na(x)))
+}
+```
+
+# Checking frequency distribution of patients with CVD.
+```{R}
+if(RUN_EDA == TRUE){ 
+summary(cleveland$num)
+}
+```
+
+# Plot frequency distribution of patients with and without cardiovascular disease
+```{R}
+if(VARIABLE_PLOTS == TRUE){ 
+cleveland %>%
+  ggplot(aes(x= num)) +
+  geom_bar(width = 0.5, fill='steelblue') +
+  ylim(0, 750) +
+  geom_text(stat = 'count', aes(label=..count..), vjust=-1)+
+  ggtitle('Frequency of patients with CVD')+
+  xlab('Presence of Cardiovascular Disease in patient')
+}
+```
+
+# Plot patient Age distribution
+```{R}
+if(VARIABLE_PLOTS == TRUE){ 
+cleveland %>%
+  ggplot(aes(x= age)) +
+  geom_bar(width = 0.5, fill='steelblue') +
+  ylim(0, 60) +
+  ggtitle('Participants Age Distribution')+
+  xlab('Participant Age (Years)')
+
+cleveland %>%
+  ggplot(aes(x= age)) +
+  geom_density()
+}
+```
+
+
+# Plot patient sex distribution
+```{R}
+if(VARIABLE_PLOTS == TRUE){ 
+cleveland %>%
+  ggplot(aes(x= sex)) +
+  geom_bar(width = 0.5, fill='steelblue') +
+  ylim(0, 800) +
+  geom_text(stat = 'count', aes(label=..count..), vjust=-1)+
+  ggtitle('Participants Sex Distribution')+
+  xlab('Participant Sex')
+}
+```
+
+# Plot patient cp distribution
+```{R}
+if(VARIABLE_PLOTS == TRUE){ 
+cleveland %>%
+  ggplot(aes(x= cp)) +
+  geom_bar(width = 0.5, fill='steelblue') +
+  ylim(0, 600) +
+  geom_text(stat = 'count', aes(label=..count..), vjust=-1)+
+  ggtitle('Participants Chest Pain type')+
+  xlab('Chest Pain Type')
+}
+```
+
+# Plot patient resting blood pressure
+```{R}
+if(VARIABLE_PLOTS == TRUE){ 
+cleveland %>%
+  ggplot(aes(x= trestbps)) +
+  geom_bar(width = 0.5, fill='steelblue') +
+  ylim(0, 20) +
+  ggtitle('Participants Age Distribution')+
+  xlab('Participant Blood Pressure (mm Hg)')
+
+
+cleveland %>%
+  ggplot(aes(x= trestbps)) +
+  geom_density(color='darkblue', fill='lightblue') +
+  ggtitle('Participant blood pressure density plot') +
+  xlab('Resting blood pressure (mm Hg)')
+}
+```
+
+# Cholesterol Plot
+```{R}
+if(VARIABLE_PLOTS == TRUE){ 
+cleveland %>%
+  ggplot(aes(x= chol)) +
+  geom_density(color='darkblue', fill='lightblue') +
+  ggtitle('Participant cholesterol density plot') +
+  xlab('Serum cholesterol in mg/dl')
+}
+```
+
+# Fasting blood sugar plot
+```{R}
+if(VARIABLE_PLOTS == TRUE){ 
+cleveland %>%
+  ggplot(aes(x= fbs)) +
+  geom_bar(width = 0.5, fill='steelblue') +
+  ylim(0, 1000) +
+  geom_text(stat = 'count', aes(label=..count..), vjust=-1)+
+  ggtitle('Participants Fasting Blood Sugar Plot')+
+  xlab('Participant Fasting Blood Sugar')
+}
+```
+
+# Resting electrocardiograph results
+```{R}
+if(VARIABLE_PLOTS == TRUE){ 
+cleveland %>%
+  ggplot(aes(x= restecg)) +
+  geom_bar(width = 0.5, fill='steelblue') +
+  ylim(0, 600) +
+  geom_text(stat = 'count', aes(label=..count..), vjust=-1)+
+  ggtitle('Resting Electrocardiograph Results Plot')+
+  xlab('Resting Electrocardiograph Results')
+}
+```
+
+# Maximum heart rate achieved
+```{R}
+if(VARIABLE_PLOTS == TRUE){
+cleveland %>%
+  ggplot(aes(x= thalach)) +
+  geom_density(color='darkblue', fill='lightblue') +
+  ggtitle('Maximum heart rate achieved density plot') +
+  xlab('Maximum heart rate achieved')
+}
+```
+
+# exang
+```{R}
+if(VARIABLE_PLOTS == TRUE){ 
+cleveland %>%
+  ggplot(aes(x= exang)) +
+  geom_bar(width = 0.5, fill='steelblue') +
+  ylim(0, 750) +
+  geom_text(stat = 'count', aes(label=..count..), vjust=-1)+
+  ggtitle('Excersise Induced Angina')+
+  xlab('Excersise Induced Angina')
+}
+```
+
+# oldpeak
+```{R}
+if(VARIABLE_PLOTS == TRUE){ 
+cleveland %>%
+  ggplot(aes(x= oldpeak)) +
+  geom_density(color='darkblue', fill='lightblue') +
+  ggtitle('ST depression induced by exercise relative to rest') +
+  xlab('ST depression induced by exercise relative to rest')
+}
+```
+
+# slope
+```{R}
+if(VARIABLE_PLOTS == TRUE){ 
+cleveland %>%
+  ggplot(aes(x= slope)) +
+  geom_bar(width = 0.5, fill='steelblue') +
+  ylim(0, 400) +
+  geom_text(stat = 'count', aes(label=..count..), vjust=-1)+
+  ggtitle('the slope of the peak exercise ST segment')+
+  xlab('the slope of the peak exercise ST segment')
+}
+```
+
+# ca
+```{R}
+if(VARIABLE_PLOTS == TRUE){ 
+cleveland %>%
+  ggplot(aes(x= ca)) +
+  geom_bar(width = 0.5, fill='steelblue') +
+  ylim(0, 200) +
+  geom_text(stat = 'count', aes(label=..count..), vjust=-1)+
+  ggtitle('number of major vessels (0-3) colored by flourosopy')+
+  xlab('number of major vessels colored by flourosopy')
+}
+```
+# thal
+```{R}
+if(VARIABLE_PLOTS == TRUE){ 
+cleveland %>%
+  ggplot(aes(x= thal)) +
+  geom_bar(width = 0.5, fill='steelblue') +
+  ylim(0, 200) +
+  geom_text(stat = 'count', aes(label=..count..), vjust=-1)+
+  ggtitle('thal')+
+  xlab('thal')
+}
+```
+
+# R cor script
+```{R}
+source('cor2.r')
+```
+
+### Mixed data-type correlation plot for patients with CVD.
+```{R}
+if(CORRELATION_PLOTS == TRUE){ 
+# `The correlation is computed as follows:
+# integer/numeric pair: pearson correlation using 'cor' function. The valuelies between -1 and 1.
+# integer/numeric - factor/categorical pair: Anova is performed and effect size is computed . The value lies between 0 and 1.
+# factor/categorical pair: cramersV value is computed based on chisq test using 'lsr::cramersV' function. The value lies between 0 and 1.
+# Pairwise complete observations are used to compute correlation. For a comprehensive implementation, use 'polycor::hetcor'
+# Value
+
+ggcorrplot(cor2(cleveland[cleveland$num == 'YES',1:13]), outline.col = "white", lab = TRUE, title = "Mixed data-type correlation plot for patients with CVD.")
+
+# Slope and oldpeak most redundant at +0.57
+# Slope and thalach +0.42
+# Exang and cp +0.43
+}
+```
+
+
+### Mixed data-type correlation plot for patients without CVD.
+```{R}
+if(CORRELATION_PLOTS == TRUE){ 
+# `The correlation is computed as follows:
+# integer/numeric pair: pearson correlation using 'cor' function. The valuelies between -1 and 1.
+# integer/numeric - factor/categorical pair: Anova is performed and effect size is computed . The value lies between 0 and 1.
+# factor/categorical pair: cramersV value is computed based on chisq test using 'lsr::cramersV' function. The value lies between 0 and 1.
+# Pairwise complete observations are used to compute correlation. For a comprehensive implementation, use 'polycor::hetcor'
+# Value
+
+ggcorrplot(cor2(cleveland[cleveland$num == 'NO',1:13]), outline.col = "white", lab = TRUE, title = "Mixed data-type correlation plot for patients without CVD.")
+
+# Thalach and age -0.52
+# Slope and oldpeak +0.46
+}
+```
+
+
+# Correlation to target variable (healthy and unhealthy)
+```{R}
+if(CORRELATED_VARIABLE_PLOTS == TRUE){ 
+ggcorrplot(cor2(cleveland), outline.col = "white", lab = TRUE, title = "Mixed data-type correlation plot for patients with and without CVD.")
+
+correlations <- cor2(cleveland)
+targetcor <- data.frame(correlations[,14])
+targetcor$v <- row.names(targetcor)
+
+
+ggplot(data = targetcor[1:13,], aes(x=v, y=correlations...14.)) +
+  geom_col()
+}
+```
+
+
+
+# Slope and Average oldpeak
+```{R}
+if(CORRELATED_VARIABLE_PLOTS == TRUE){ 
+mean(cleveland[cleveland$slope == "Flat", 10])
+
+ggplot(cleveland, aes(x=slope, y=oldpeak)) +
+  stat_summary(fun.y=mean, geom="bar") +
+  stat_summary(aes(label=signif(..y.., 4)), fun.y=mean, geom="text", vjust=-1) +
+  ggtitle("Mean oldpeak values with respect to patients slope category")
+}
+```
+
+
+# Thalach and age
+
+```{R}
+if(CORRELATED_VARIABLE_PLOTS == TRUE){ 
+ggplot(data = cleveland, aes(x=age, y=thalach)) +
+  geom_point() +
+  geom_smooth(method = 'lm') +
+  ggtitle("Relation between age and thalach")
+}
+```
+
+# Removing columns with only one factor or missing values in
+```{R}
+if(REMOVE_COLS_WITH_ONLY_ONE_FACTOR == TRUE){
+tmp <- names(sapply(sapply(cleveland[,sapply(cleveland, is.factor)], levels), list.count) < 2)[sapply(sapply(cleveland[,sapply(cleveland, is.factor)], levels), list.count) < 2]
+tmp <- cleveland[,-which(names(cleveland) %in% tmp)]
+tmp <- na.omit(tmp)
+cleveland <- tmp
+str(tmp)
+str(droplevels(tmp))
+}
+```
+
+# Feature importance
+```{R}
+if(FEATURE_IMPORTANCE_CALC == TRUE){ 
+set.seed(SEED)
+full.model <- glm(num~., data = cleveland, family = "binomial")
+step.model <- stepAIC(full.model, direction = STEPWISE_DIRECTION)
+# Least important features:
+# restecg, ages, fbs
+}
+```
+
+
+# Feature Selection
+```{R}
+cleveland <- cleveland[
+c(
+INCLUDE_FEATURE_AGE,
+INCLUDE_FEATURE_SEX,
+INCLUDE_FEATURE_CP,
+INCLUDE_FEATURE_TRESTBPS,
+INCLUDE_FEATURE_CHOL,
+INCLUDE_FEATURE_FBS,
+INCLUDE_FEATURE_RESTECG,
+INCLUDE_FEATURE_THALACH,
+INCLUDE_FEATURE_EXANG,
+INCLUDE_FEATURE_OLDPEAK,
+INCLUDE_FEATURE_SLOPE,
+INCLUDE_FEATURE_CA
+)]
+#cleveland[,c(-1, -5, -7, -10)]
+#This below is best
+#cleveland <- cleveland[,c(-1, -5, -6, -10, -7)]
+
+#cleveland <- cleveland[,c(-1, -5, -10)]
+#cleveland
+```
+
+
+# Remove columns with % of missings
+```{R}
+if(REMOVE_COLS == TRUE){
+cleveland <- cleveland[, which(colMeans(!is.na(cleveland)) > REMOVE_COLS_MISSING_THRESHOLD)]
+  }
+```
+
+# Remove any rows with NAs
+```{R}
+if(REMOVE_NA_ROWS == TRUE){
+cleveland <- cleveland[complete.cases(cleveland),]
+}
+```
+
+# Data imputation
+```{R}
+if(DATA_IMPUTATION == TRUE){ 
+# 4 missing from ca
+# 2 missing from thal
+cleveland <- mice(cleveland, m=DATA_IMPUTATION_M, maxit=DATA_IMPUTATION_MAXIT, method = DATA_IMPUTATION_METHOD)
+cleveland <- complete(cleveland)
+}
+```
+
+
+# Train/Test split
+```{R}
+if(SPLIT_DATA_SET == TRUE){ 
+set.seed(SEED)
+clevelandTrainIndex <- createDataPartition(cleveland$num,p=TEST_TRAIN_SPLIT,list=FALSE)
+cleveland_train <- cleveland[clevelandTrainIndex,]
+cleveland_test <- cleveland[-clevelandTrainIndex,]
+}
+
+if(SPLIT_DATA_SET == FALSE){
+  cleveland_train <- cleveland
+}
+```
+
+# Logistic Regression Model
+# Training and validating
+```{R}
+if(ALGORITHIM_TO_RUN == "logreg"){ 
+set.seed(SEED)
+default_glm_mod = caret::train(
+  form = num ~ .,
+  data = cleveland_train,
+  trControl = trainControl(method = VALIDATION_METHOD, number = FOLDS, classProbs = TRUE, summaryFunction = twoClassSummary, repeats=REPEATS),
+  method = "glm",
+  family = "binomial",
+  na.action = "na.exclude",
+  metric = "ROC"
+)
+
+default_glm_mod$results
+confusionMatrix(default_glm_mod)
+
+ROC <- default_glm_mod$results[2]
+
+CV_Parameter1 <- NA 
+CV_Parameter2 <- NA 
+CV_Parameter3 <- NA
+CV_ConfusionMatrix <- confusionMatrix(default_glm_mod)
+CV_Accuracy <- (CV_ConfusionMatrix$table[1,1]+CV_ConfusionMatrix$table[2,2])/sum(CV_ConfusionMatrix$table)
+}
+```
+# Test set
+```{R}
+if(ALGORITHIM_TO_RUN == "logreg" & SPLIT_DATA_SET == TRUE){ 
+clevelandActu <- na.omit(cleveland_test)$num
+clevelandPred <- predict(default_glm_mod, newdata = cleveland_test, na.action="na.omit")
+Test_ConfusionMatrix <- confusionMatrix(data = clevelandPred, reference = clevelandActu)
+Test_Accuracy <- (Test_ConfusionMatrix$table[1,1]+Test_ConfusionMatrix$table[2,2])/sum(Test_ConfusionMatrix$table)
+}
+```
+
+
+##### Random Forest Model
+# Random Forest Model 
+# Training and validating
+```{R}
+if(RF_MTRY == "Auto"){
+  RF_MTRY <-  sqrt(ncol(cleveland_train))
+}
+
+
+if(ALGORITHIM_TO_RUN == "rf") { 
+mtry <- RF_MTRY
+set.seed(SEED)
+modellist <- list()
+
+
+if(GRID_SEARCH == TRUE){
+tunegrid <- expand.grid(.mtry=seq(RF_MTRY-(RF_MTRY_SEARCH_BOUNDARY/2), RF_MTRY+(RF_MTRY_SEARCH_BOUNDARY/2), by = RF_MTRY_SEARCH_INCREMENT))
+default_rf_mod = caret::train(
+  form = num ~ .,
+  data = cleveland_train,
+  trControl = trainControl(method = VALIDATION_METHOD, number = FOLDS, classProbs = TRUE, search = "random", repeats=REPEATS, summaryFunction = twoClassSummary),
+  method = "rf",
+  metric = "ROC",
+  family = "binomial",
+  na.action = "na.exclude",
+  tuneGrid = tunegrid,
+  ntree = RF_NTREES,
+  preProcess = c("center", "scale")[c(CENTER, SCALE)]
+)
+}
+
+
+if(GRID_SEARCH == FALSE){
+tunegrid <- expand.grid(.mtry=RF_MTRY)
+default_rf_mod = caret::train(
+  form = num ~ .,
+  data = cleveland_train,
+  trControl = trainControl(method = VALIDATION_METHOD, number = FOLDS, classProbs = TRUE, search = "random", repeats=REPEATS, summaryFunction = twoClassSummary),
+  metric = "ROC",
+  method = "rf",
+  family = "binomial",
+  na.action = "na.exclude",
+  tuneGrid = tunegrid,
+  ntree = RF_NTREES,
+  preProcess = c("center", "scale")[c(CENTER, SCALE)]
+)
+}
+ROC <- default_rf_mod$results[2]
+
+CV_Parameter1 <- NA 
+CV_Parameter2 <-default_rf_mod$results[1]
+CV_Parameter3 <-default_rf_mod$results[1]
+CV_ConfusionMatrix <- confusionMatrix(default_rf_mod)
+CV_Accuracy <- (CV_ConfusionMatrix$table[1,1]+CV_ConfusionMatrix$table[2,2])/sum(CV_ConfusionMatrix$table)
+}
+```
+
+
+
+
+
+
+
+
+
+
+# Test set
+```{R}
+if(ALGORITHIM_TO_RUN == "rf" & SPLIT_DATA_SET == TRUE){ 
+clevelandActu <- na.omit(cleveland_test)$num
+clevelandPred <- predict(default_rf_mod, newdata = cleveland_test, na.action = "na.omit")
+Test_ConfusionMatrix <- confusionMatrix(data = clevelandPred, reference = clevelandActu)
+Test_Accuracy <- (Test_ConfusionMatrix$table[1,1]+Test_ConfusionMatrix$table[2,2])/sum(Test_ConfusionMatrix$table)
+}
+```
+
+
+
+
+
+
+
+
+
+
+
+# Train and validating SVM model
+```{R}
+set.seed(SEED)
+if(ALGORITHIM_TO_RUN == 'svm'){
+  
+  
+if(GRID_SEARCH == TRUE)  {
+tunegrid <- expand.grid(C = SVM_C_TO_SEARCH)
+
+  
+default_svm_mod = caret::train(
+  form = num ~ .,
+  data = cleveland_train,
+  trControl = trainControl(method = VALIDATION_METHOD, number = FOLDS, classProbs = TRUE, repeats=REPEATS, summaryFunction = twoClassSummary),
+  method = "svmLinear",
+  family = "binomial",
+  na.action = "na.exclude",
+  metric = "ROC",
+  preProcess = c("center", "scale")[c(CENTER, SCALE)],
+  tuneGrid = tunegrid
+)
+}
+  
+if(GRID_SEARCH == FALSE)  {
+tunegrid <- expand.grid(SVM_C)
+
+
+default_svm_mod = caret::train(
+  form = num ~ .,
+  data = cleveland_train,
+  trControl = trainControl(method = VALIDATION_METHOD, number = FOLDS, classProbs = TRUE, summaryFunction = twoClassSummary),
+  method = "svmLinear",
+  family = "binomial",
+  na.action = "na.exclude",
+  metric = "ROC",
+  preProcess = c("center", "scale")[c(CENTER, SCALE)]
+)
+}
+
+default_svm_mod$results[as.numeric(rownames(default_svm_mod$bestTune)),]
+ROC <- default_svm_mod$results[2]
+  
+CV_Parameter1 <- default_svm_mod$results[as.numeric(rownames(default_svm_mod$bestTune)),][1]
+CV_Parameter2 <- NA
+CV_Parameter3 <- NA
+CV_ConfusionMatrix <- confusionMatrix(default_svm_mod)
+CV_Accuracy <- (CV_ConfusionMatrix$table[1,1]+CV_ConfusionMatrix$table[2,2])/sum(CV_ConfusionMatrix$table)
+}
+```
+
+# Test set
+```{R}
+if(ALGORITHIM_TO_RUN == "svm" & SPLIT_DATA_SET == TRUE){ 
+tmp <- cleveland_test[complete.cases(cleveland_test),]
+clevelandActu <- tmp$num
+clevelandPred <- predict(default_svm_mod, newdata = tmp, na.action = "na.exclude")
+Test_ConfusionMatrix <- confusionMatrix(data = clevelandPred, reference = clevelandActu)
+Test_Accuracy <- (Test_ConfusionMatrix$table[1,1]+Test_ConfusionMatrix$table[2,2])/sum(Test_ConfusionMatrix$table)
+}
+```
+# Combine results into vector
+```{R}
+
+if(SPLIT_DATA_SET == TRUE){
+
+if(ALGORITHIM_TO_RUN == 'rf'){
+  besttune <-   default_rf_mod$bestTune
+} else {
+  besttune <- NA
+}
+
+
+if(
+  any( c(
+INCLUDE_FEATURE_AGE,
+INCLUDE_FEATURE_SEX,
+INCLUDE_FEATURE_CP,
+INCLUDE_FEATURE_TRESTBPS,
+INCLUDE_FEATURE_CHOL,
+INCLUDE_FEATURE_FBS,
+INCLUDE_FEATURE_RESTECG,
+INCLUDE_FEATURE_THALACH,
+INCLUDE_FEATURE_EXANG,
+INCLUDE_FEATURE_OLDPEAK,
+INCLUDE_FEATURE_SLOPE,
+INCLUDE_FEATURE_CA
+))  == 'FALSE')
+{
+    FEATURES_SELECTED <- TRUE
+} else { FEATURES_SELECTED <- FALSE }
+
+View(data.frame(
+           'Predicted_Dataset' = c(VALIDATION_METHOD, 'Test Data Split'),
+           'CV_Folds' = c(FOLDS, FOLDS),
+           'CV_Repeats' = c(REPEATS, REPEATS),
+           'Cleveland' = c(INCLUDE_CLEVELAND, INCLUDE_CLEVELAND),
+           'Hungarian' = c(INCLUDE_HUNGARIAN, INCLUDE_HUNGARIAN),
+           'Switzerland' = c(INCLUDE_SWITZERLAND, INCLUDE_SWITZERLAND),
+           'VA' = c(INCLUDE_VA, INCLUDE_VA),
+           'Algorithm' = c(ALGORITHIM_TO_RUN,ALGORITHIM_TO_RUN),
+           'Feature_Selection' = c(FEATURES_SELECTED,FEATURES_SELECTED),
+           'Parameter_Tuning' = c(GRID_SEARCH,GRID_SEARCH),
+           'Data_Imputation' = c(DATA_IMPUTATION,DATA_IMPUTATION),
+           'Accuracy' = c(CV_Accuracy, Test_Accuracy),
+           'ROC' = c(ROC, "Needs Adding"),
+           'TN' = c(CV_ConfusionMatrix$table[1,1], Test_ConfusionMatrix$table[1,1]),
+           'FN' = c(CV_ConfusionMatrix$table[2,1], Test_ConfusionMatrix$table[2,1]),
+           'FP' = c(CV_ConfusionMatrix$table[1,2], Test_ConfusionMatrix$table[1,2]),
+           'TP' = c(CV_ConfusionMatrix$table[2,2], Test_ConfusionMatrix$table[2,2]),
+           'C Parameter' = c(CV_Parameter1[1], CV_Parameter1[1]),
+           'mtry' = c(besttune, besttune),
+           'ntrees' = c(RF_NTREES, RF_NTREES),
+           'INCLUDE_FEATURE_AGE' = c(INCLUDE_FEATURE_AGE, INCLUDE_FEATURE_AGE),
+           'INCLUDE_FEATURE_SEX' = c(INCLUDE_FEATURE_SEX, INCLUDE_FEATURE_SEX),
+           'INCLUDE_FEATURE_CP' = c(INCLUDE_FEATURE_CP, INCLUDE_FEATURE_CP),
+           'INCLUDE_FEATURE_TRESTBPS' = c(INCLUDE_FEATURE_TRESTBPS, INCLUDE_FEATURE_TRESTBPS),
+           'INCLUDE_FEATURE_CHOL' = c(INCLUDE_FEATURE_CHOL, INCLUDE_FEATURE_CHOL),
+           'INCLUDE_FEATURE_FBS' = c(INCLUDE_FEATURE_FBS, INCLUDE_FEATURE_FBS),
+           'INCLUDE_FEATURE_RESTECG' = c(INCLUDE_FEATURE_RESTECG, INCLUDE_FEATURE_RESTECG),
+           'INCLUDE_FEATURE_THALACH' = c(INCLUDE_FEATURE_THALACH, INCLUDE_FEATURE_THALACH),
+           'INCLUDE_FEATURE_EXANG' = c(INCLUDE_FEATURE_EXANG, INCLUDE_FEATURE_EXANG),
+           'INCLUDE_FEATURE_OLDPEAK' = c(INCLUDE_FEATURE_OLDPEAK, INCLUDE_FEATURE_OLDPEAK),
+           'INCLUDE_FEATURE_SLOPE' = c(INCLUDE_FEATURE_SLOPE, INCLUDE_FEATURE_SLOPE),
+           'INCLUDE_FEATURE_CA' = c(INCLUDE_FEATURE_CA, INCLUDE_FEATURE_CA),
+           'Data_Split' =c(TEST_TRAIN_SPLIT, 1-TEST_TRAIN_SPLIT)
+           )
+)
+}
+
+
+if(SPLIT_DATA_SET == FALSE){
+
+if(ALGORITHIM_TO_RUN == 'rf'){
+  besttune <-   default_rf_mod$bestTune
+} else {
+  besttune <- NA
+}
+
+
+if(
+  any( c(
+INCLUDE_FEATURE_AGE,
+INCLUDE_FEATURE_SEX,
+INCLUDE_FEATURE_CP,
+INCLUDE_FEATURE_TRESTBPS,
+INCLUDE_FEATURE_CHOL,
+INCLUDE_FEATURE_FBS,
+INCLUDE_FEATURE_RESTECG,
+INCLUDE_FEATURE_THALACH,
+INCLUDE_FEATURE_EXANG,
+INCLUDE_FEATURE_OLDPEAK,
+INCLUDE_FEATURE_SLOPE,
+INCLUDE_FEATURE_CA
+))  == 'FALSE')
+{
+    FEATURES_SELECTED <- TRUE
+} else { FEATURES_SELECTED <- FALSE }
+
+View(data.frame(
+           'Predicted_Dataset' = c(VALIDATION_METHOD),
+           'CV_Folds' = c(FOLDS),
+           'CV_Repeats' = c(REPEATS),
+           'Cleveland' = c(INCLUDE_CLEVELAND),
+           'Hungarian' = c(INCLUDE_HUNGARIAN),
+           'Switzerland' = c(INCLUDE_SWITZERLAND),
+           'VA' = c(INCLUDE_VA),
+           'Algorithm' = c(ALGORITHIM_TO_RUN),
+           'Feature_Selection' = c(FEATURES_SELECTED),
+           'Parameter_Tuning' = c(GRID_SEARCH),
+           'Data_Imputation' = c(DATA_IMPUTATION),
+           'Accuracy' = c(CV_Accuracy),
+           'ROC' = c(ROC),
+           'TN' = c(CV_ConfusionMatrix$table[1,1]),
+           'FN' = c(CV_ConfusionMatrix$table[2,1]),
+           'FP' = c(CV_ConfusionMatrix$table[1,2]),
+           'TP' = c(CV_ConfusionMatrix$table[2,2]),
+           'C Parameter' = c(CV_Parameter1[1]),
+           'mtry' = c(besttune),
+           'ntrees' = c(RF_NTREES),
+           'INCLUDE_FEATURE_AGE' = c(INCLUDE_FEATURE_AGE),
+           'INCLUDE_FEATURE_SEX' = c(INCLUDE_FEATURE_SEX),
+           'INCLUDE_FEATURE_CP' = c(INCLUDE_FEATURE_CP),
+           'INCLUDE_FEATURE_TRESTBPS' = c(INCLUDE_FEATURE_TRESTBPS),
+           'INCLUDE_FEATURE_CHOL' = c(INCLUDE_FEATURE_CHOL),
+           'INCLUDE_FEATURE_FBS' = c(INCLUDE_FEATURE_FBS),
+           'INCLUDE_FEATURE_RESTECG' = c(INCLUDE_FEATURE_RESTECG),
+           'INCLUDE_FEATURE_THALACH' = c(INCLUDE_FEATURE_THALACH),
+           'INCLUDE_FEATURE_EXANG' = c(INCLUDE_FEATURE_EXANG),
+           'INCLUDE_FEATURE_OLDPEAK' = c(INCLUDE_FEATURE_OLDPEAK),
+           'INCLUDE_FEATURE_SLOPE' = c(INCLUDE_FEATURE_SLOPE),
+           'INCLUDE_FEATURE_CA' = c(INCLUDE_FEATURE_CA),
+           'Data_Split' = c(1)
+           )
+)
+}
+
+
+```
+
+
+
+
+```{r}
+saveRDS(default_glm_mod, "model.rds")
+#saveRDS(cleveland_train, "data.rds")
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
